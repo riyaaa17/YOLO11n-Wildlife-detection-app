@@ -1,0 +1,12 @@
+
+names:
+  0: buffalo
+  1: elephant
+  2: rhino
+  3: zebra
+
+nc: 4
+
+train: C:\Users\riyad\Downloads\files\train\images
+val: C:\Users\riyad\Downloads\files\valid\images
+test: C:\Users\riyad\Downloads\files\test\images
