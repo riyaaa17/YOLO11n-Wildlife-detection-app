@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # WildEye — Wildlife Detection Streamlit App
 
 A production-grade Streamlit UI for YOLO11n wildlife object detection.
@@ -72,3 +73,6 @@ print("WildEye running at:", public_url)
     ├── images/
     └── labels/
 ```
+=======
+# YOLO11n-Wildlife-detection-app
+
