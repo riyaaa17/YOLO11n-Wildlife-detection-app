@@ -305,7 +305,7 @@ with st.sidebar:
     st.divider()
     page = st.radio(
         "Navigation",
-        ["🏠 Overview", "🔍 Detect", "🏋️ Train", "📊 Evaluate", "📈 Analytics"],
+        ["🏠 Overview", "🔍 Detect", "🔤 OCR", "🏋️ Train", "📊 Evaluate", "📈 Analytics"],
         label_visibility="collapsed"
     )
     st.divider()
@@ -816,8 +816,8 @@ elif page == "📊 Evaluate":
 elif page == "📈 Analytics":
     st.markdown('<div class="section-head">📈 Dataset Analytics</div>', unsafe_allow_html=True)
 
-    dataset_root_a = st.text_input("Dataset root path", "C:/Users/riyad/Downloads/files", key="analytics_root")
-    yaml_path_a    = st.text_input("data.yaml path", "C:/Users/riyad/Downloads/files/data.yaml", key="analytics_yaml")
+    dataset_root_a = st.text_input("Dataset root path", "/content/wildlife_data", key="analytics_root")
+    yaml_path_a    = st.text_input("data.yaml path", "/content/data.yaml", key="analytics_yaml")
 
     if st.button("📊 Load Analytics"):
         if not os.path.exists(dataset_root_a):
@@ -951,3 +951,417 @@ elif page == "📈 Analytics":
             except Exception as e:
                 st.error(f"Analytics error: {e}")
                 st.exception(e)
+
+# ── Page: OCR ─────────────────────────────────────────────────────────────────
+elif page == "🔤 OCR":
+    st.markdown('<div class="section-head">🔤 OCR — Text Extraction from Images</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="info-box">
+        Extract text from wildlife images — useful for reading <strong>animal ear tags</strong>,
+        <strong>ranger ID plates</strong>, <strong>location signs</strong>, <strong>research labels</strong>,
+        and any text visible in field photography. Combines YOLO detection + Tesseract OCR in one pipeline.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Install check ─────────────────────────────────────────────────────────
+    def check_tesseract():
+        try:
+            import pytesseract
+            pytesseract.get_tesseract_version()
+            return True, pytesseract
+        except Exception:
+            return False, None
+
+    tess_ok, pytesseract = check_tesseract()
+
+    if not tess_ok:
+        st.error("Tesseract OCR engine not found. Install it using the commands below, then restart the app.")
+        st.markdown('<div class="section-head">Installation</div>', unsafe_allow_html=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Windows**")
+            st.code("# 1. Download installer from:\nhttps://github.com/UB-Mannheim/tesseract/wiki\n\n# 2. Install Python wrapper:\npip install pytesseract pillow", language="bash")
+            st.markdown("""
+            <div class="info-box">
+            After installing Tesseract on Windows, add it to PATH or set the path in the app:
+            <br><code>C:\\Program Files\\Tesseract-OCR\\tesseract.exe</code>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with c2:
+            st.markdown("**Linux / Colab**")
+            st.code("# Install engine:\nsudo apt install tesseract-ocr -y\n\n# Install Python wrapper:\npip install pytesseract pillow", language="bash")
+            st.markdown("**macOS**")
+            st.code("brew install tesseract\npip install pytesseract pillow", language="bash")
+
+        st.divider()
+        # Allow manual path override
+        st.markdown("**Already installed? Set Tesseract path manually:**")
+        tess_path = st.text_input("Tesseract executable path",
+                                   r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        if st.button("Apply Path & Retry"):
+            try:
+                import pytesseract as pt
+                pt.pytesseract.tesseract_cmd = tess_path
+                ver = pt.get_tesseract_version()
+                st.success(f"Tesseract found! Version: {ver}")
+                tess_ok = True
+                pytesseract = pt
+                st.rerun()
+            except Exception as e:
+                st.error(f"Still not found: {e}")
+        st.stop()
+
+    # ── Tesseract available — show OCR UI ─────────────────────────────────────
+    import pytesseract as pt
+
+    # Optional path override in sidebar area
+    with st.expander("⚙️ Tesseract Settings"):
+        custom_tess_path = st.text_input(
+            "Custom Tesseract path (leave blank for auto)",
+            placeholder=r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        )
+        if custom_tess_path:
+            pt.pytesseract.tesseract_cmd = custom_tess_path
+
+        ocr_lang = st.selectbox("OCR Language", ["eng", "eng+osd", "osd"], index=0)
+        ocr_psm  = st.select_slider(
+            "Page Segmentation Mode (PSM)",
+            options=list(range(0, 14)),
+            value=6,
+            help="6=block of text (default), 7=single line, 11=sparse text, 3=auto"
+        )
+
+    tab_ocr_single, tab_ocr_detect, tab_ocr_batch = st.tabs([
+        "Single Image OCR", "Detect + OCR Combined", "Batch OCR"
+    ])
+
+    # ── Tab 1: Single Image OCR ───────────────────────────────────────────────
+    with tab_ocr_single:
+        st.markdown("Upload an image to extract all visible text.")
+        ocr_img_file = st.file_uploader(
+            "Upload image for OCR",
+            type=["jpg", "jpeg", "png", "bmp", "tiff", "webp"],
+            key="ocr_single",
+            label_visibility="collapsed"
+        )
+
+        if ocr_img_file:
+            image = Image.open(ocr_img_file).convert("RGB")
+
+            col_img, col_result = st.columns(2)
+
+            with col_img:
+                st.markdown("**Input Image**")
+                st.image(image, use_container_width=True)
+
+            with col_result:
+                st.markdown("**OCR Settings**")
+                preprocess = st.multiselect(
+                    "Preprocessing",
+                    ["Grayscale", "Threshold (binarize)", "Denoise", "Upscale 2x"],
+                    default=["Grayscale"],
+                    help="Preprocessing often improves OCR accuracy on field photos"
+                )
+
+                if st.button("🔤 Run OCR", key="run_ocr_single"):
+                    with st.spinner("Extracting text..."):
+                        import numpy as np, cv2
+                        img_arr = np.array(image)
+
+                        # Preprocessing pipeline
+                        proc = img_arr.copy()
+
+                        if "Upscale 2x" in preprocess:
+                            proc = cv2.resize(proc, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+                        if "Grayscale" in preprocess:
+                            proc = cv2.cvtColor(proc, cv2.COLOR_RGB2GRAY)
+                        else:
+                            proc = cv2.cvtColor(proc, cv2.COLOR_RGB2BGR)
+
+                        if "Denoise" in preprocess:
+                            if len(proc.shape) == 2:
+                                proc = cv2.fastNlMeansDenoising(proc, h=10)
+                            else:
+                                proc = cv2.fastNlMeansDenoisingColored(proc, h=10)
+
+                        if "Threshold (binarize)" in preprocess:
+                            if len(proc.shape) == 3:
+                                proc = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
+                            _, proc = cv2.threshold(proc, 0, 255,
+                                                    cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                        proc_pil = Image.fromarray(proc)
+                        config = f"--psm {ocr_psm} --oem 3"
+
+                        raw_text = pt.image_to_string(proc_pil, lang=ocr_lang, config=config)
+                        data = pt.image_to_data(proc_pil, lang=ocr_lang, config=config,
+                                                output_type=pt.Output.DICT)
+
+                    # Show preprocessed image
+                    st.markdown("**Preprocessed Image**")
+                    st.image(proc_pil, use_container_width=True, clamp=True)
+
+                    st.markdown('<div class="section-head">Extracted Text</div>', unsafe_allow_html=True)
+
+                    if raw_text.strip():
+                        st.markdown(f"""
+                        <div style="background:var(--surface2);border:1px solid var(--border);
+                                    border-left:3px solid var(--accent);border-radius:8px;
+                                    padding:1rem 1.2rem;font-family:var(--font-mono);
+                                    font-size:0.9rem;white-space:pre-wrap;color:var(--text);">
+{raw_text.strip()}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.warning("No text detected. Try different preprocessing or PSM mode.")
+
+                    # Word-level confidence table
+                    words = [w for w, c in zip(data['text'], data['conf'])
+                             if str(w).strip() and int(c) > 0]
+                    confs = [int(c) for w, c in zip(data['text'], data['conf'])
+                             if str(w).strip() and int(c) > 0]
+
+                    if words:
+                        st.markdown('<div class="section-head">Word Confidence Scores</div>', unsafe_allow_html=True)
+                        import pandas as pd
+                        df_words = pd.DataFrame({
+                            "Word": words,
+                            "Confidence (%)": confs
+                        }).sort_values("Confidence (%)", ascending=False)
+                        st.dataframe(df_words, hide_index=True, use_container_width=True)
+
+                        avg_conf = sum(confs) / len(confs)
+                        wc1, wc2, wc3 = st.columns(3)
+                        wc1.metric("Words Detected", len(words))
+                        wc2.metric("Avg Confidence", f"{avg_conf:.1f}%")
+                        wc3.metric("Characters", len(raw_text.strip()))
+
+                    # Download button
+                    st.download_button(
+                        "⬇ Download Extracted Text",
+                        data=raw_text,
+                        file_name="ocr_result.txt",
+                        mime="text/plain"
+                    )
+
+    # ── Tab 2: YOLO Detection + OCR Combined ─────────────────────────────────
+    with tab_ocr_detect:
+        st.markdown("""
+        <div class="info-box">
+            Runs YOLO detection first, then applies OCR to each detected region independently.
+            Useful for reading tags/labels on specific animals rather than the whole image.
+        </div>
+        """, unsafe_allow_html=True)
+
+        combo_file = st.file_uploader(
+            "Upload image for Detection + OCR",
+            type=["jpg", "jpeg", "png", "bmp"],
+            key="ocr_detect",
+            label_visibility="collapsed"
+        )
+
+        if combo_file:
+            image = Image.open(combo_file).convert("RGB")
+            st.image(image, caption="Original Image", use_container_width=True)
+
+            if st.button("🚀 Run Detection + OCR", key="run_combo"):
+                with st.spinner("Running YOLO then OCR on each region..."):
+                    try:
+                        import numpy as np, cv2
+
+                        # Step 1: YOLO detection
+                        model_name = custom_model_path if custom_model_path else "yolo11n.pt"
+                        model = load_model(model_name)
+                        results = model.predict(image, imgsz=img_size,
+                                                conf=conf_thresh, iou=iou_thresh,
+                                                verbose=False)
+                        result = results[0]
+
+                        class_names = model.names
+                        if isinstance(class_names, dict):
+                            class_names = [class_names.get(i, f"cls_{i}")
+                                           for i in range(max(class_names)+1)]
+
+                        img_arr = np.array(image)
+
+                        # Draw all boxes on full image
+                        result_pil, detections = draw_boxes(image, result.boxes,
+                                                            class_names, conf_thresh)
+                        st.markdown('<div class="section-head">Detection Result</div>',
+                                    unsafe_allow_html=True)
+                        st.image(result_pil, use_container_width=True)
+
+                        if not detections:
+                            st.warning("No objects detected. Try lowering the confidence threshold.")
+                        else:
+                            st.markdown('<div class="section-head">OCR per Detected Region</div>',
+                                        unsafe_allow_html=True)
+
+                            config = f"--psm {ocr_psm} --oem 3"
+                            h_img, w_img = img_arr.shape[:2]
+
+                            for idx, box in enumerate(result.boxes):
+                                cls_id = int(box.cls[0])
+                                conf_val = float(box.conf[0])
+                                if conf_val < conf_thresh:
+                                    continue
+
+                                x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].cpu().numpy()]
+                                x1, y1 = max(0, x1), max(0, y1)
+                                x2, y2 = min(w_img, x2), min(h_img, y2)
+
+                                cls_name = class_names[cls_id] if cls_id < len(class_names) else f"cls_{cls_id}"
+                                color = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
+
+                                # Crop region
+                                crop = img_arr[y1:y2, x1:x2]
+                                if crop.size == 0:
+                                    continue
+
+                                crop_pil = Image.fromarray(crop)
+
+                                # Upscale small crops for better OCR
+                                cw, ch = crop_pil.size
+                                if cw < 200 or ch < 200:
+                                    scale = max(200 / cw, 200 / ch, 1)
+                                    crop_pil = crop_pil.resize(
+                                        (int(cw*scale), int(ch*scale)),
+                                        Image.LANCZOS
+                                    )
+
+                                # Convert to gray for OCR
+                                crop_gray = crop_pil.convert("L")
+                                ocr_text = pt.image_to_string(
+                                    crop_gray, lang=ocr_lang, config=config
+                                ).strip()
+
+                                # Display each region
+                                r1, r2 = st.columns([1, 2])
+                                with r1:
+                                    st.image(crop_pil,
+                                             caption=f"Region {idx+1}: {cls_name} ({conf_val:.0%})",
+                                             use_container_width=True)
+                                with r2:
+                                    st.markdown(f"""
+                                    <div style="margin-bottom:0.4rem;">
+                                        <span style="background:{color};color:#0d1117;
+                                                     padding:2px 10px;border-radius:12px;
+                                                     font-size:0.8rem;font-weight:600;">
+                                            {cls_name}
+                                        </span>
+                                        <span style="color:var(--muted);font-size:0.8rem;
+                                                     margin-left:0.5rem;">
+                                            conf: {conf_val:.0%}
+                                        </span>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+
+                                    if ocr_text:
+                                        st.markdown(f"""
+                                        <div style="background:var(--surface2);
+                                                    border:1px solid var(--border);
+                                                    border-left:3px solid {color};
+                                                    border-radius:8px;padding:0.7rem 1rem;
+                                                    font-family:var(--font-mono);
+                                                    font-size:0.85rem;color:var(--text);
+                                                    white-space:pre-wrap;">
+{ocr_text}
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                    else:
+                                        st.markdown(
+                                            '<span style="color:var(--muted);font-size:0.85rem;">'
+                                            'No text found in this region</span>',
+                                            unsafe_allow_html=True
+                                        )
+                                st.divider()
+
+                    except Exception as e:
+                        st.error(f"Combined pipeline error: {e}")
+                        st.exception(e)
+
+    # ── Tab 3: Batch OCR ──────────────────────────────────────────────────────
+    with tab_ocr_batch:
+        st.markdown("Process multiple images at once and get a combined text report.")
+
+        batch_ocr_files = st.file_uploader(
+            "Upload images for batch OCR",
+            type=["jpg", "jpeg", "png", "bmp"],
+            accept_multiple_files=True,
+            key="ocr_batch",
+            label_visibility="collapsed"
+        )
+
+        if batch_ocr_files:
+            col_s1, col_s2 = st.columns(2)
+            b_grayscale  = col_s1.checkbox("Grayscale preprocessing", value=True)
+            b_threshold  = col_s2.checkbox("Binarize (threshold)", value=False)
+
+            if st.button("🔤 Run Batch OCR", key="run_batch_ocr"):
+                import numpy as np, cv2, pandas as pd
+
+                config = f"--psm {ocr_psm} --oem 3"
+                progress = st.progress(0, text="Starting batch OCR...")
+                all_results = []
+
+                for idx, f in enumerate(batch_ocr_files):
+                    img = Image.open(f).convert("RGB")
+                    arr = np.array(img)
+
+                    proc = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if b_grayscale \
+                           else cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+                    if b_threshold:
+                        if len(proc.shape) == 3:
+                            proc = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
+                        _, proc = cv2.threshold(proc, 0, 255,
+                                                cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                    proc_pil = Image.fromarray(proc)
+                    text = pt.image_to_string(proc_pil, lang=ocr_lang,
+                                              config=config).strip()
+                    word_count = len(text.split()) if text else 0
+
+                    all_results.append({
+                        "File": f.name,
+                        "Words Detected": word_count,
+                        "Extracted Text": text if text else "(no text found)"
+                    })
+
+                    progress.progress(
+                        (idx+1)/len(batch_ocr_files),
+                        text=f"Processed {idx+1}/{len(batch_ocr_files)}: {f.name}"
+                    )
+
+                progress.empty()
+
+                st.markdown('<div class="section-head">Batch OCR Results</div>',
+                            unsafe_allow_html=True)
+
+                df_batch = pd.DataFrame(all_results)
+                st.dataframe(df_batch, hide_index=True, use_container_width=True)
+
+                # Summary metrics
+                total_words = sum(r["Words Detected"] for r in all_results)
+                found = sum(1 for r in all_results if r["Words Detected"] > 0)
+
+                bc1, bc2, bc3 = st.columns(3)
+                bc1.metric("Images Processed", len(all_results))
+                bc2.metric("Images with Text", found)
+                bc3.metric("Total Words Found", total_words)
+
+                # Combined text download
+                combined_text = "\n\n".join(
+                    f"=== {r['File']} ===\n{r['Extracted Text']}"
+                    for r in all_results
+                )
+                st.download_button(
+                    "⬇ Download All Extracted Text",
+                    data=combined_text,
+                    file_name="batch_ocr_results.txt",
+                    mime="text/plain"
+                )
